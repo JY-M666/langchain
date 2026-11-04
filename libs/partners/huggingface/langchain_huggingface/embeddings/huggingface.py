@@ -7,6 +7,29 @@ from langchain_core.embeddings import Embeddings
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def _get_accelerator_target_devices() -> list[str] | None:
+    """Return explicit PyTorch accelerator devices when available.
+
+    SentenceTransformers defaults to CUDA/NPU workers or CPU workers. Passing
+    explicit devices lets it use other PyTorch accelerators such as XPU.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    accelerator = getattr(torch, "accelerator", None)
+    if accelerator is None or not accelerator.is_available():
+        return None
+
+    device = accelerator.current_accelerator()
+    device_count = accelerator.device_count()
+    if device is None or device_count < 1:
+        return None
+
+    return [f"{device.type}:{index}" for index in range(device_count)]
+
+
 class HuggingFaceEmbeddings(BaseModel, Embeddings):
     """HuggingFace sentence_transformers embedding models.
 
@@ -105,7 +128,13 @@ class HuggingFaceEmbeddings(BaseModel, Embeddings):
 
         texts = [x.replace("\n", " ") for x in texts]
         if self.multi_process:
-            pool = self._client.start_multi_process_pool()
+            target_devices = _get_accelerator_target_devices()
+            pool_kwargs = (
+                {"target_devices": target_devices}
+                if target_devices is not None
+                else {}
+            )
+            pool = self._client.start_multi_process_pool(**pool_kwargs)
             embeddings = self._client.encode_multi_process(texts, pool)
             sentence_transformers.SentenceTransformer.stop_multi_process_pool(pool)
         else:
